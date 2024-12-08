@@ -73,6 +73,7 @@ map<string, int> operationCycles = {
     {"MUL", 8}};
 
 vector<int> registers(8, 0);
+
 map<int, int> memory;
 vector<ReservationStation> reservationStations(12);
 map<string, int> labelAddresses;
@@ -115,6 +116,8 @@ void tomasulo::initialize()
         entry.value = 0;
         entry.ready = false;
     }
+
+    registers[6] = 4;
 }
 
 int tomasulo::allocateROBEntry()
@@ -252,6 +255,11 @@ void tomasulo::issue(Instruction instr, vector<ReservationStation> &reservationS
                     rs.Vj = registers[instr.rA]; // Store value of rA into memory
                     rs.Qj = -1;                  // Assume no dependency for now
                 }
+                else
+                {
+                    rs.Vj = registers[instr.rA];
+                    rs.Qj = -1; // No dependency for LOAD on this example
+                }
             }
             else if (instr.opcode == "BEQ")
             {
@@ -274,13 +282,11 @@ void tomasulo::issue(Instruction instr, vector<ReservationStation> &reservationS
             else
             {
                 // Other ALU operations
-                rs.Vj = reorderBuffer[instr.rB].ready ? registers[instr.rB] : 0;
-                rs.Qj = reorderBuffer[instr.rB].ready ? -1 : instr.rB;
+                rs.Vj = (reorderBuffer[instr.rB].ready ? registers[instr.rB] : 0);
+                rs.Qj = (reorderBuffer[instr.rB].ready ? -1 : instr.rB);
 
-                rs.Vk = (instr.opcode == "ADDI") ? instr.imm : reorderBuffer[instr.rC].ready ? registers[instr.rC]
-                                                                                             : 0;
-                rs.Qk = (instr.opcode == "ADDI") ? -1 : reorderBuffer[instr.rC].ready ? -1
-                                                                                      : instr.rC;
+                rs.Vk = (instr.opcode == "ADDI") ? instr.imm : (reorderBuffer[instr.rC].ready ? registers[instr.rC] : 0);
+                rs.Qk = (instr.opcode == "ADDI") ? -1 : (reorderBuffer[instr.rC].ready ? -1 : instr.rC);
             }
 
             // Step 4: Initialize ROB entry
@@ -310,11 +316,14 @@ void tomasulo::execute(vector<ReservationStation> &reservationStations, vector<R
 
         if (rs.busy)
         {
-            // Wait for operands if not ready
-            // if (rs.Qj != -1 || rs.Qk != -1)
-            // {
-            //     continue; // Wait for operands to arrive on the CDB
-            // }
+            if (rs.Qj != -1) // Operand is not ready, fetch from ROB
+            {
+                rs.Vj = rob[rs.Qj].value;
+            }
+            if (rs.Qk != -1) // Operand is not ready, fetch from ROB
+            {
+                rs.Vk = rob[rs.Qk].value;
+            }
             if (rs.cyclesLeft > 0)
             {
                 rs.cyclesLeft--; // Decrement cycles
@@ -341,8 +350,6 @@ void tomasulo::execute(vector<ReservationStation> &reservationStations, vector<R
                 }
                 else if (rs.op == "LOAD")
                 {
-                    cout << "ADDRESS " << rs.address << endl;
-                    cout << "MEMM " << memory[rs.address];
                     rs.result = memory[rs.address];
                 }
                 else if (rs.op == "STORE")
