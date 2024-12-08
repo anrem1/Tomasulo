@@ -3,14 +3,26 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <sstream>
 using namespace std;
+
+struct InstructionProgress
+{
+    int issuedCycle = -1;    // Cycle when the instruction was issued
+    int startExecCycle = -1; // Cycle when execution started
+    int endExecCycle = -1;   // Cycle when execution ended
+    int writeCycle = -1;     // Cycle when write-back occurred
+    int commitCycle = -1;    // Cycle when the instruction was committed
+};
 
 struct Instruction
 {
     string opcode;  // Instructions in assembly
     int rA, rB, rC; // Registers
     int imm;        // Immediate value
-    int offset;     // Offset for memory operations
+    string offset;  // Offset for memory operations
+    string label;
+    InstructionProgress progress;
 };
 
 struct ReservationStation
@@ -36,6 +48,7 @@ struct ROBEntry
     bool speculative;  // Indicates if the instruction was executed speculatively
 };
 vector<ROBEntry> reorderBuffer(6); // ROB with 6 entries
+vector<Instruction> instructions;
 
 map<string, int> availableReservationStations = {
     {"LOAD", 2},
@@ -62,6 +75,7 @@ map<string, int> operationCycles = {
 vector<int> registers(8, 0);
 map<int, int> memory;
 vector<ReservationStation> reservationStations(12);
+map<string, int> labelAddresses;
 
 class tomasulo
 {
@@ -83,6 +97,7 @@ public:
     bool allInstructionsCompleted();
     void handleBranch(vector<ReservationStation> &reservationStations, vector<ROBEntry> &rob, int mispredictedBranchIndex);
     int allocateROBEntry();
+    void setupHardware();
 };
 
 void tomasulo::initialize()
@@ -116,7 +131,7 @@ int tomasulo::allocateROBEntry()
 
 void tomasulo::displayMetrics()
 {
-    cout << "Total Cycles: " << totalCycles << endl;
+    // cout << "Total Cycles: " << totalCycles << endl;
     cout << "Instructions Per Cycle (IPC): " << (double)instructionsCompleted / totalCycles << endl;
     cout << "Branch Mispredictions: " << branchMispredictions << endl;
 
@@ -129,12 +144,36 @@ void tomasulo::displayMetrics()
     {
         cout << "Branch Misprediction Rate: N/A (No branches encountered)" << endl;
     }
+
+    cout << "\nFinal Register States:\n";
+    for (int i = 0; i < registers.size(); ++i)
+    {
+        cout << "R" << i << " = " << registers[i] << endl;
+    }
+
+    // Display Memory Contents
+    cout
+        << "\nFinal Memory States:\n";
+    for (int i = 0; i < memory.size(); ++i)
+    {
+        cout << "Memory[" << i << "] = " << memory[i] << endl;
+    }
+
+    for (const auto &instr : instructions)
+    {
+        cout << instr.opcode << "   issued: "
+             << (instr.progress.issuedCycle == -1 ? "-" : to_string(instr.progress.issuedCycle)) << "   start exec: "
+             << (instr.progress.startExecCycle == -1 ? "-" : to_string(instr.progress.startExecCycle)) << "   end exec: "
+             << (instr.progress.endExecCycle == -1 ? "-" : to_string(instr.progress.endExecCycle)) << "  write:  "
+             << (instr.progress.writeCycle == -1 ? "-" : to_string(instr.progress.writeCycle)) << " commit:  "
+             << (instr.progress.commitCycle == -1 ? "-" : to_string(instr.progress.commitCycle)) << endl;
+    }
 }
 
 void tomasulo::simulate(vector<Instruction> &instructions, vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer, int startingAddress)
 {
     int cycle = 0;
-    int pc = startingAddress; // Initialize program counter with starting address
+    pc = startingAddress; // Initialize program counter with starting address
     instructionsCompleted = 0;
 
     while (true)
@@ -146,6 +185,7 @@ void tomasulo::simulate(vector<Instruction> &instructions, vector<ReservationSta
         if (pc < instructions.size())
         {
             issue(instructions[pc], reservationStations, reorderBuffer);
+            instructions[pc].progress.issuedCycle = cycle;
             pc++; // Move to the next instruction
         }
         cout << "\n\n";
@@ -153,6 +193,10 @@ void tomasulo::simulate(vector<Instruction> &instructions, vector<ReservationSta
         totalCycles++;
         cout << "Cycle: " << cycle << ", PC: " << pc << endl;
         // Step 2: Execute stage
+        if (instructions[pc - 1].progress.startExecCycle == -1 && totalCycles > instructions[pc - 1].progress.issuedCycle)
+        {
+            instructions[pc - 1].progress.startExecCycle = totalCycles;
+        }
         execute(reservationStations, reorderBuffer);
 
         // cycle++;
@@ -169,7 +213,7 @@ void tomasulo::simulate(vector<Instruction> &instructions, vector<ReservationSta
         // Break condition: Exit when all instructions are completed
         if (allInstructionsCompleted())
         {
-            cout << "All instructions completed at cycle: " << cycle << endl;
+            cout << "All instructions completed at cycle: " << totalCycles << endl;
             break;
         }
     }
@@ -201,7 +245,8 @@ void tomasulo::issue(Instruction instr, vector<ReservationStation> &reservationS
             // Step 3: Handle operands and dependencies
             if (instr.opcode == "LOAD" || instr.opcode == "STORE")
             {
-                rs.address = registers[instr.rB] + instr.offset;
+                int offset = stoi(instr.offset);
+                rs.address = registers[instr.rB] + offset;
                 if (instr.opcode == "STORE")
                 {
                     rs.Vj = registers[instr.rA]; // Store value of rA into memory
@@ -296,6 +341,8 @@ void tomasulo::execute(vector<ReservationStation> &reservationStations, vector<R
                 }
                 else if (rs.op == "LOAD")
                 {
+                    cout << "ADDRESS " << rs.address << endl;
+                    cout << "MEMM " << memory[rs.address];
                     rs.result = memory[rs.address];
                 }
                 else if (rs.op == "STORE")
@@ -325,11 +372,26 @@ void tomasulo::execute(vector<ReservationStation> &reservationStations, vector<R
 
                 // Mark the result as ready
                 rs.resultReady = true;
+
+                if (instructions[pc - 1].progress.endExecCycle == -1)
+                {
+                    instructions[pc - 1].progress.endExecCycle = totalCycles;
+                }
                 totalCycles++;
+
                 cout << "\n\n";
+                if (instructions[pc - 1].progress.writeCycle == -1 && totalCycles > instructions[pc].progress.endExecCycle)
+                {
+                    instructions[pc - 1].progress.writeCycle = totalCycles;
+                }
+
                 write(reservationStations, rob);
                 cout << "\n\n";
                 totalCycles++;
+                if (instructions[pc - 1].progress.commitCycle == -1 && totalCycles > instructions[pc].progress.writeCycle)
+                {
+                    instructions[pc - 1].progress.commitCycle = totalCycles;
+                }
                 commit(reservationStations, rob);
             }
         }
@@ -519,24 +581,183 @@ void loadMemoryFromFile(map<int, int> &memory, const string &filename)
 
 void loadInstructionsFromFile(vector<Instruction> &instructions, const string &filename)
 {
-    ifstream instructionFile(filename);
-    if (!instructionFile)
+    ifstream inputFile(filename);
+    if (!inputFile)
     {
         cerr << "Error: Could not open instructions file!" << endl;
         return;
     }
 
-    string opcode;
-    int rA, rB, rC, imm, offset;
+    string line;
+    int address = 0;
 
-    while (instructionFile >> opcode >> rA >> rB >> rC >> imm >> offset) // fix input style later
+    // First pass: Store label addresses and instructions
+    while (getline(inputFile, line))
     {
-        Instruction instr = {opcode, rA, rB, rC, imm, offset};
-        instructions.push_back(instr);
+        // Skip empty lines
+        if (line.empty())
+        {
+            continue;
+        }
+
+        // If the line ends with a colon, it's a label
+        if (line.back() == ':')
+        {
+            string label = line.substr(0, line.length() - 1); // Remove the colon
+            labelAddresses[label] = address;                  // Store label and its address
+        }
+        else
+        {
+            Instruction instr;
+            stringstream ss(line);
+            ss >> instr.opcode >> instr.rA >> instr.rB >> instr.rC >> instr.imm >> instr.offset;
+
+            // Check for parsing errors
+            if (ss.fail())
+            {
+                cerr << "Error: Invalid instruction format in file at line: " << line << endl;
+                continue;
+            }
+
+            // Save the instruction and increment the address
+            instructions.push_back(instr);
+            address++; // Increment address for each instruction
+        }
     }
 
-    instructionFile.close();
-    cout << "Instructions loaded successfully from file: " << filename << endl;
+    // Second pass: Replace labels with their addresses
+    for (auto &instr : instructions)
+    {
+        if (instr.opcode == "BEQ") // Specifically handle BEQ label resolution
+        {
+            if (labelAddresses.find(instr.offset) != labelAddresses.end())
+            {
+                instr.imm = labelAddresses[instr.offset]; // Replace label with its address
+                instr.offset = "";                        // Clear the label string now that it's replaced
+            }
+            else if (!instr.offset.empty())
+            {
+                cerr << "Error: Undefined label " << instr.offset << endl;
+            }
+        }
+        else if (instr.opcode == "CALL") // Handle CALL label resolution
+        {
+            // Store the return address (next instruction address) in R1
+            instr.rA = 1;            // Let's say R1 holds the return address
+            instr.imm = address + 1; // The next instruction address is the return address
+            if (labelAddresses.find(instr.offset) != labelAddresses.end())
+            {
+                instr.offset = "";                       // Clear the label name as it's now resolved
+                instr.rB = labelAddresses[instr.offset]; // Jump to the label address
+            }
+            else if (!instr.offset.empty())
+            {
+                cerr << "Error: Undefined label " << instr.offset << endl;
+            }
+        }
+    }
+
+    inputFile.close();
+    cout << "Instructions loaded and parsed successfully from file: " << filename << endl;
+}
+
+void tomasulo::setupHardware()
+{
+    int choice;
+    cout << "Would you like to use the default hardware configuration or set up your own?" << endl;
+    cout << "1. Default hardware" << endl;
+    cout << "2. Custom hardware" << endl;
+    cout << "Enter your choice (1 or 2): ";
+    cin >> choice;
+
+    if (choice == 1)
+    {
+        // Default configuration
+        availableReservationStations = {
+            {"LOAD", 2},
+            {"STORE", 1},
+            {"BEQ", 1},
+            {"CALL", 1},
+            {"RET", 1},
+            {"ADD", 4},
+            {"ADDI", 4},
+            {"NAND", 2},
+            {"MUL", 1}};
+
+        operationCycles = {
+            {"LOAD", 6},
+            {"STORE", 6},
+            {"BEQ", 1},
+            {"CALL", 1},
+            {"RET", 1},
+            {"ADD", 2},
+            {"ADDI", 2},
+            {"NAND", 1},
+            {"MUL", 8}};
+    }
+    else if (choice == 2)
+    {
+        // Custom configuration
+        cout << "Enter number of reservation stations for LOAD: ";
+        cin >> availableReservationStations["LOAD"];
+        cout << "Enter number of reservation stations for STORE: ";
+        cin >> availableReservationStations["STORE"];
+        cout << "Enter number of reservation stations for BEQ: ";
+        cin >> availableReservationStations["BEQ"];
+        cout << "Enter number of reservation stations for CALL: ";
+        cin >> availableReservationStations["CALL"];
+        cout << "Enter number of reservation stations for RET: ";
+        cin >> availableReservationStations["RET"];
+        cout << "Enter number of reservation stations for ADD: ";
+        cin >> availableReservationStations["ADD"];
+        cout << "Enter number of reservation stations for ADDI: ";
+        cin >> availableReservationStations["ADDI"];
+        cout << "Enter number of reservation stations for NAND: ";
+        cin >> availableReservationStations["NAND"];
+        cout << "Enter number of reservation stations for MUL: ";
+        cin >> availableReservationStations["MUL"];
+
+        cout << "Enter number of ROB entries: ";
+        int robEntries;
+        cin >> robEntries;
+
+        // Initialize ROB with user-defined entries
+        vector<ROBEntry> reorderBuffer(robEntries);
+
+        // Now, prompt for the number of cycles for each functional unit
+        cout << "Enter number of cycles for LOAD: ";
+        cin >> operationCycles["LOAD"];
+        cout << "Enter number of cycles for STORE: ";
+        cin >> operationCycles["STORE"];
+        cout << "Enter number of cycles for BEQ: ";
+        cin >> operationCycles["BEQ"];
+        cout << "Enter number of cycles for CALL: ";
+        cin >> operationCycles["CALL"];
+        cout << "Enter number of cycles for RET: ";
+        cin >> operationCycles["RET"];
+        cout << "Enter number of cycles for ADD: ";
+        cin >> operationCycles["ADD"];
+        cout << "Enter number of cycles for ADDI: ";
+        cin >> operationCycles["ADDI"];
+        cout << "Enter number of cycles for NAND: ";
+        cin >> operationCycles["NAND"];
+        cout << "Enter number of cycles for MUL: ";
+        cin >> operationCycles["MUL"];
+    }
+
+    // Initialize reservation stations based on available reservation stations
+    for (auto &entry : availableReservationStations)
+    {
+        int numStations = entry.second;
+        for (int i = 0; i < numStations; ++i)
+        {
+            ReservationStation rs;
+            rs.op = entry.first;
+            rs.busy = false;
+            rs.cyclesLeft = operationCycles[entry.first];
+            reservationStations.push_back(rs);
+        }
+    }
 }
 
 int main()
@@ -546,7 +767,7 @@ int main()
 
     // Initialize memory and instructions
     // map<int, int> memory;
-    vector<Instruction> instructions;
+    // vector<Instruction> instructions;
 
     // Step 1: Load memory values from a file
     string memoryFilename;
@@ -565,8 +786,9 @@ int main()
     cout << "Enter the starting address of the program: ";
     cin >> startingAddress;
 
-    // Step 4: Initialize the simulator
+    // Step 4: Initialize the simulator with default or user input
     simulator.initialize();
+    simulator.setupHardware();
 
     // Step 5: Execute the simulation
     simulator.simulate(instructions, reservationStations, reorderBuffer, startingAddress);

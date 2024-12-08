@@ -1,0 +1,9 @@
+start:
+ADD  2 0 1 0 0     
+MUL  3 1 2 0 0     
+LOAD 4 2 0 0 4     
+STORE 4 2 0 0 4    
+BEQ  5 6 0 0 start    
+CALL 7 0 0 0 jump
+jump:
+RET  0 0 0 0 0     
