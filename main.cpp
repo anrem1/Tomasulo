@@ -61,7 +61,7 @@ map<string, int> operationCycles = {
 
 vector<int> registers(8, 0);
 map<int, int> memory;
-vector<ReservationStation> reservationStations(10); // Example: 10 reservation stations
+vector<ReservationStation> reservationStations(12);
 
 class tomasulo
 {
@@ -71,16 +71,18 @@ public:
     int branchMispredictions = 0;
     int totalBranches = 0;
     int pc = 0;
+    int startingAfdress;
 
     void initialize();
     void displayMetrics();
-    void simulate(vector<Instruction> &instructions, vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer);
+    void simulate(vector<Instruction> &instructions, vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer, int startingAddress);
     void issue(Instruction instr, vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer);
     void commit(vector<ReservationStation> &reservationStations, vector<ROBEntry> &rob);
     void write(vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer);
-    void execute(vector<ReservationStation> &reservationStations);
+    void execute(vector<ReservationStation> &reservationStations, vector<ROBEntry> &rob);
     bool allInstructionsCompleted();
     void handleBranch(vector<ReservationStation> &reservationStations, vector<ROBEntry> &rob, int mispredictedBranchIndex);
+    int allocateROBEntry();
 };
 
 void tomasulo::initialize()
@@ -100,44 +102,76 @@ void tomasulo::initialize()
     }
 }
 
+int tomasulo::allocateROBEntry()
+{
+    for (int i = 0; i < reorderBuffer.size(); ++i)
+    {
+        if (reorderBuffer[i].state == "Empty")
+        {
+            return i;
+        }
+    }
+    return -1; // No available ROB entry
+}
+
 void tomasulo::displayMetrics()
 {
     cout << "Total Cycles: " << totalCycles << endl;
     cout << "Instructions Per Cycle (IPC): " << (double)instructionsCompleted / totalCycles << endl;
     cout << "Branch Mispredictions: " << branchMispredictions << endl;
-    cout << "Branch Misprediction Rate: "
-         << (double)branchMispredictions / totalBranches * 100 << "%" << endl;
+
+    if (totalBranches > 0)
+    {
+        cout << "Branch Misprediction Rate: "
+             << (double)branchMispredictions / totalBranches * 100 << "%" << endl;
+    }
+    else
+    {
+        cout << "Branch Misprediction Rate: N/A (No branches encountered)" << endl;
+    }
 }
 
-void tomasulo::simulate(vector<Instruction> &instructions, vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer)
+void tomasulo::simulate(vector<Instruction> &instructions, vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer, int startingAddress)
 {
     int cycle = 0;
-    // int pc = 0; // Program counter to track the current instruction
+    int pc = startingAddress; // Initialize program counter with starting address
+    instructionsCompleted = 0;
 
     while (true)
     {
         cycle++;
         totalCycles++;
-
-        // Step 1: Commit stage
-        commit(reservationStations, reorderBuffer);
-
-        // Step 2: Write stage
-        write(reservationStations, reorderBuffer);
-
-        // Step 3: Execute stage
-        execute(reservationStations);
-
-        // Step 4: Issue stage
+        cout << "Cycle: " << cycle << ", PC: " << pc << endl;
+        // Step 1: Issue stage
         if (pc < instructions.size())
         {
             issue(instructions[pc], reservationStations, reorderBuffer);
             pc++; // Move to the next instruction
         }
+        cout << "\n\n";
+        cycle++;
+        totalCycles++;
+        cout << "Cycle: " << cycle << ", PC: " << pc << endl;
+        // Step 2: Execute stage
+        execute(reservationStations, reorderBuffer);
+
+        // cycle++;
+        // cout << "Cycle after execute: " << cycle << ", PC: " << pc << endl;
+
+        // Step 3: Write stage
+        // write(reservationStations, reorderBuffer);
+
+        // cycle++;
+        // cout << "Cycle after write: " << cycle << ", PC: " << pc << endl;
+        // Step 4: Commit stage
+        // commit(reservationStations, reorderBuffer);
 
         // Break condition: Exit when all instructions are completed
         if (allInstructionsCompleted())
+        {
+            cout << "All instructions completed at cycle: " << cycle << endl;
             break;
+        }
     }
 
     // Output performance metrics
@@ -222,18 +256,20 @@ void tomasulo::issue(Instruction instr, vector<ReservationStation> &reservationS
     cout << "No available reservation station for instruction: " << instr.opcode << endl;
 }
 
-void tomasulo::execute(vector<ReservationStation> &reservationStations)
+void tomasulo::execute(vector<ReservationStation> &reservationStations, vector<ROBEntry> &rob)
 {
     for (auto &rs : reservationStations)
     {
+        cout << "RS op: " << rs.op << ", busy: " << rs.busy << ", resultReady: " << rs.resultReady
+             << ", cyclesLeft: " << rs.cyclesLeft << endl;
+
         if (rs.busy)
         {
             // Wait for operands if not ready
-            if (rs.Qj != -1 || rs.Qk != -1)
-            {
-                continue; // Wait for operands to arrive on the CDB
-            }
-
+            // if (rs.Qj != -1 || rs.Qk != -1)
+            // {
+            //     continue; // Wait for operands to arrive on the CDB
+            // }
             if (rs.cyclesLeft > 0)
             {
                 rs.cyclesLeft--; // Decrement cycles
@@ -289,6 +325,12 @@ void tomasulo::execute(vector<ReservationStation> &reservationStations)
 
                 // Mark the result as ready
                 rs.resultReady = true;
+                totalCycles++;
+                cout << "\n\n";
+                write(reservationStations, rob);
+                cout << "\n\n";
+                totalCycles++;
+                commit(reservationStations, rob);
             }
         }
     }
@@ -296,45 +338,58 @@ void tomasulo::execute(vector<ReservationStation> &reservationStations)
 
 void tomasulo::commit(vector<ReservationStation> &reservationStations, vector<ROBEntry> &rob)
 {
-    for (int i = 0; i < rob.size(); ++i) // Traverse ROB in program order
+    cout << "Cycle: " << totalCycles << endl;
+    for (int i = 0; i < rob.size(); ++i)
     {
         ROBEntry &entry = rob[i];
+        cout << "ROB entry " << i << ": state = " << entry.state << ", destination = " << entry.destination
+             << ", value = " << entry.value << ", ready = " << entry.ready << endl;
 
         // Only commit if the instruction is ready and in the "Write" state
         if (entry.ready && entry.state == "Write")
         {
-            // Step 1: Write result to destination
+            // Check for branch misprediction (based on linked reservation station)
+            if (entry.speculative)
+            {
+                for (auto &rs : reservationStations)
+                {
+                    if (rs.robIndex == i && rs.op == "BEQ")
+                    {
+                        // Check branch result in the reservation station
+                        if (rs.result == 1) // Branch was taken (misprediction for always-not-taken predictor)
+                        {
+                            branchMispredictions++;
+                            handleBranch(reservationStations, rob, i);
+                            return; // Stop further commits until rollback is handled
+                        }
+                    }
+                }
+            }
+
+            // Commit result to destination (for non-branch instructions)
             if (entry.destination != -1) // Valid destination (not for STORE)
             {
                 registers[entry.destination] = entry.value;
                 cout << "Committed result to R" << entry.destination << ": " << entry.value << endl;
             }
 
-            // Step 2: Free the associated reservation station
+            // Free the associated reservation station
             for (auto &rs : reservationStations)
             {
                 if (rs.robIndex == i) // Match the ROB entry
                 {
                     rs.busy = false;
                     rs.resultReady = false;
+                    rs.robIndex = -1; // Clear the ROB linkage
                     break;
                 }
             }
 
-            // Step 3: Mark ROB entry as committed
+            // Mark ROB entry as committed
             entry.state = "Commit";
-            entry.instructionID = -1;
             entry.ready = false;
+            entry.speculative = false;
 
-            // Step 4: Handle speculative execution (rollback not shown here)
-            if (entry.speculative)
-            {
-                // Placeholder: Handle branch misprediction rollback logic
-                // (This might involve resetting ROB and RS entries).
-                cout << "Speculative instruction committed (pending rollback checks)." << endl;
-            }
-
-            // Update metrics
             instructionsCompleted++;
         }
     }
@@ -342,6 +397,7 @@ void tomasulo::commit(vector<ReservationStation> &reservationStations, vector<RO
 
 void tomasulo::write(vector<ReservationStation> &reservationStations, vector<ROBEntry> &reorderBuffer)
 {
+    cout << "Cycle: " << totalCycles << endl;
     for (auto &rs : reservationStations)
     {
         if (rs.busy && rs.resultReady)
@@ -377,11 +433,20 @@ void tomasulo::write(vector<ReservationStation> &reservationStations, vector<ROB
 
 bool tomasulo::allInstructionsCompleted()
 {
+    // Check reservation stations
     for (const auto &rs : reservationStations)
     {
         if (rs.busy)
             return false; // If any reservation station is busy, instructions are not completed
     }
+
+    // Check ROB
+    for (const auto &entry : reorderBuffer)
+    {
+        if (entry.state != "Empty" && entry.state != "Commit")
+            return false; // If any ROB entry is still active, instructions are not completed
+    }
+
     return true; // All instructions are completed
 }
 
@@ -389,44 +454,148 @@ void tomasulo::handleBranch(vector<ReservationStation> &reservationStations, vec
 {
     cout << "Branch misprediction detected at ROB entry " << mispredictedBranchIndex << ". Rolling back..." << endl;
 
-    // Invalidate all speculative instructions in the ROB
-    for (int i = mispredictedBranchIndex; i < rob.size(); ++i)
+    // Reset ROB entries for speculative instructions
+    for (int i = mispredictedBranchIndex + 1; i < rob.size(); ++i)
     {
         ROBEntry &entry = rob[i];
-        if (entry.speculative)
-        {
-            entry.instructionID = -1;
-            entry.state = "Empty";
-            entry.destination = -1;
-            entry.value = 0;
-            entry.ready = false;
-        }
+        entry.instructionID = -1;
+        entry.state = "Empty";
+        entry.destination = -1;
+        entry.value = 0;
+        entry.ready = false;
+        entry.speculative = false; // Clear speculative flag
     }
 
-    // Reset all reservation stations associated with speculative instructions
+    // Reset all reservation stations for speculative instructions
     for (auto &rs : reservationStations)
     {
-        if (rs.robIndex >= mispredictedBranchIndex)
+        if (rs.robIndex > mispredictedBranchIndex)
         {
             rs.busy = false;
             rs.resultReady = false;
+            rs.robIndex = -1;
+        }
+    }
+
+    // Update PC to the correct branch target
+    for (auto &rs : reservationStations)
+    {
+        if (rs.robIndex == mispredictedBranchIndex && rs.op == "BEQ")
+        {
+            if (rs.result == 1) // Branch taken
+            {
+                pc = rs.address; // Correct branch target
+                break;
+            }
+            else
+            {
+                pc = mispredictedBranchIndex + 1; // Next instruction (not taken)
+                break;
+            }
         }
     }
 
     cout << "Rollback complete. Execution resumed from corrected branch." << endl;
 }
 
-int allocateROBEntry()
+void loadMemoryFromFile(map<int, int> &memory, const string &filename)
 {
-    for (int i = 0; i < reorderBuffer.size(); ++i)
+    ifstream memoryFile(filename);
+    if (!memoryFile)
     {
-        if (reorderBuffer[i].state == "Empty")
-        {
-            return i;
-        }
+        cerr << "Error: Could not open memory file!" << endl;
+        return;
     }
-    return -1; // No available ROB entry
+
+    int address, value;
+    while (memoryFile >> address >> value)
+    {
+        memory[address] = value; // Load address-value pairs into memory
+    }
+
+    memoryFile.close();
+    cout << "Memory loaded successfully from file: " << filename << endl;
 }
+
+void loadInstructionsFromFile(vector<Instruction> &instructions, const string &filename)
+{
+    ifstream instructionFile(filename);
+    if (!instructionFile)
+    {
+        cerr << "Error: Could not open instructions file!" << endl;
+        return;
+    }
+
+    string opcode;
+    int rA, rB, rC, imm, offset;
+
+    while (instructionFile >> opcode >> rA >> rB >> rC >> imm >> offset) // fix input style later
+    {
+        Instruction instr = {opcode, rA, rB, rC, imm, offset};
+        instructions.push_back(instr);
+    }
+
+    instructionFile.close();
+    cout << "Instructions loaded successfully from file: " << filename << endl;
+}
+
+int main()
+{
+    // Create an instance of the simulator
+    tomasulo simulator;
+
+    // Initialize memory and instructions
+    // map<int, int> memory;
+    vector<Instruction> instructions;
+
+    // Step 1: Load memory values from a file
+    string memoryFilename;
+    cout << "Enter the name of the memory file: ";
+    cin >> memoryFilename;
+    loadMemoryFromFile(memory, memoryFilename);
+
+    // Step 2: Load program instructions from a file
+    string instructionsFilename;
+    cout << "Enter the name of the instructions file: ";
+    cin >> instructionsFilename;
+    loadInstructionsFromFile(instructions, instructionsFilename);
+
+    // Step 3: Ask for the starting address
+    int startingAddress;
+    cout << "Enter the starting address of the program: ";
+    cin >> startingAddress;
+
+    // Step 4: Initialize the simulator
+    simulator.initialize();
+
+    // Step 5: Execute the simulation
+    simulator.simulate(instructions, reservationStations, reorderBuffer, startingAddress);
+
+    return 0;
+}
+
+/*
+algorithm steps:
+Issue—get instruction from FP Op Queue
+• If reservation station free and there is an empty slot in the ROB, send the operands
+to the reservation station if they are available in either the registers or the ROB. The
+number of the ROB entry is also sent to the reservation station.
+• Execute—operate on operands (EX)
+• When both operands are ready then execute; if not ready, watch Common Data Bus for result
+• Write result—finish execution (WB)
+• Write the result (along with the ROB tag) on Common Data Bus to all awaiting units
+and ROB
+• Mark the reservation station as available
+• Commit—When the instruction is no longer speculative
+• When an instruction reaches the head of the ROB and its result is available,
+the processor updates the register file (or the memory in case of a store) and removes the
+instruction from the ROB.
+• In case the instruction is a branch who has been incorrectly predicted, the ROB is
+flushed and execution is restarted from the correct branch target
+
+
+
+*/
 
 // memory
 
@@ -486,30 +655,3 @@ mul: 1
 // implementing and integrating a parser to allow the user to provide the input program using proper
 // assembly language including labels for jump targets and function calls. The assembly program can be
 // entered directly in the application or in a text file read by the application
-
-int main()
-{
-}
-
-/*
-algorithm steps:
-Issue—get instruction from FP Op Queue
-• If reservation station free and there is an empty slot in the ROB, send the operands
-to the reservation station if they are available in either the registers or the ROB. The
-number of the ROB entry is also sent to the reservation station.
-• Execute—operate on operands (EX)
-• When both operands are ready then execute; if not ready, watch Common Data Bus for result
-• Write result—finish execution (WB)
-• Write the result (along with the ROB tag) on Common Data Bus to all awaiting units
-and ROB
-• Mark the reservation station as available
-• Commit—When the instruction is no longer speculative
-• When an instruction reaches the head of the ROB and its result is available,
-the processor updates the register file (or the memory in case of a store) and removes the
-instruction from the ROB.
-• In case the instruction is a branch who has been incorrectly predicted, the ROB is
-flushed and execution is restarted from the correct branch target
-
-
-
-*/
